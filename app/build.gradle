@@ -7,7 +7,7 @@ plugins {
 android {
     namespace 'com.trianguloy.urlchecker'
     defaultConfig {
-        applicationId "com.trianguloy.urlchecker"
+        applicationId "fi.kallio.linkfilter"
         compileSdkVersion 36
         minSdkVersion 19
         targetSdkVersion 36
