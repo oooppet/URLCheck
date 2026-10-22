@@ -31,6 +31,7 @@ import com.trianguloy.urlchecker.modules.companions.VersionManager;
 import com.trianguloy.urlchecker.modules.list.DrawerModule;
 import com.trianguloy.urlchecker.url.UrlData;
 import com.trianguloy.urlchecker.utilities.AndroidSettings;
+import com.trianguloy.urlchecker.utilities.DirectOpen;
 import com.trianguloy.urlchecker.utilities.URLBlocklist;
 import com.trianguloy.urlchecker.utilities.methods.AndroidUtils;
 import com.trianguloy.urlchecker.utilities.methods.Animations;
@@ -77,6 +78,7 @@ public class MainDialog extends Activity {
     private AlertDialog urlChooser;
     private int requestGeneration = 0;
     private boolean awaitingSelection = false;
+    private boolean directOpenFailed = false;
 
     // ------------------- module functions -------------------
 
@@ -161,7 +163,7 @@ public class MainDialog extends Activity {
 
             // fifth run automations
             // bug: you can't run automations that modify the url, maybe it's time to implement a proper url queue
-            if (automationRules.automationsEnabledPref.get()) {
+            if (!directOpenFailed && automationRules.automationsEnabledPref.get()) {
                 for (var matchedAutomation : automationRules.check(urlData, this)) {
                     for (var automationKey : matchedAutomation.actions()) {
                         var action = automations.get(automationKey);
@@ -224,7 +226,12 @@ public class MainDialog extends Activity {
         super.onCreate(savedInstanceState);
         var links = getAllowedUrls(getIntent());
         if (isFinishing()) return;
+        showIncomingUrls(links);
+    }
 
+    /** Direct forwarding must be possible before creating any normal dialog UI. */
+    private void ensureDialogInitialized() {
+        if (ll_main != null) return;
         AndroidSettings.setTheme(this, true);
         LocaleUtils.setLocale(this);
         requestWindowFeature(Window.FEATURE_NO_TITLE);
@@ -250,8 +257,6 @@ public class MainDialog extends Activity {
 
         // load helpers
         automationRules = new AutomationRules(this);
-
-        showIncomingUrls(links);
     }
 
     @Override
@@ -268,6 +273,7 @@ public class MainDialog extends Activity {
     private List<String> getAllowedUrls(Intent intent) {
         requestGeneration++;
         awaitingSelection = true;
+        directOpenFailed = false;
         dismissUrlChooser();
         modules.clear();
         automations.clear();
@@ -286,20 +292,20 @@ public class MainDialog extends Activity {
     }
 
     private void showIncomingUrls(List<String> links) {
+        final int generation = requestGeneration;
+        if (links.size() == 1) {
+            selectIncomingUrl(links.get(0), generation);
+            return;
+        }
+        ensureDialogInitialized();
         ll_main.removeAllViews();
         ll_drawer.removeAllViews();
         ll_drawer.setVisibility(View.GONE);
-        final int generation = requestGeneration;
         switch (links.size()) {
             case 0:
                 // no links, invalid
                 Toast.makeText(this, R.string.invalid, Toast.LENGTH_SHORT).show();
                 finish();
-                break;
-            case 1:
-                // 1 link, just that
-
-                selectIncomingUrl(links.get(0), generation);
                 break;
             default:
                 // multiple links, choose
@@ -319,9 +325,22 @@ public class MainDialog extends Activity {
     private void selectIncomingUrl(String url, int generation) {
         if (generation != requestGeneration || !awaitingSelection
                 || isFinishing() || isDestroyed()) return;
-        dismissUrlChooser();
-        initializeModules();
+        // Consume this selection before launching; old/double chooser callbacks do nothing.
         awaitingSelection = false;
+        dismissUrlChooser();
+        if (URLBlocklist.isBlocked(url, new URLBlocklist(this).getDomains())) {
+            finish();
+            return;
+        }
+        var result = DirectOpen.tryOpen(this, url);
+        if (result == DirectOpen.Result.OPENED) {
+            finish();
+            return;
+        }
+        directOpenFailed = result == DirectOpen.Result.FAILED;
+        ensureDialogInitialized();
+        ll_drawer.setVisibility(View.GONE);
+        initializeModules();
         onNewUrl(new UrlData(url));
     }
 
@@ -346,6 +365,13 @@ public class MainDialog extends Activity {
         modules.clear();
         ll_main.removeAllViews();
         ll_drawer.removeAllViews();
+        if (directOpenFailed) {
+            var warning = new TextView(this);
+            warning.setText(R.string.direct_open_failed);
+            warning.setCompoundDrawablesRelativeWithIntrinsicBounds(R.drawable.warning, 0, 0, 0);
+            warning.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+            ll_main.addView(warning);
+        }
         var placeOnDrawer = false;
 
         // add
